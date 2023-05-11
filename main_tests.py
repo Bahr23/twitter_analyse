@@ -1,31 +1,30 @@
 import re
-from nltk.corpus import stopwords as nltk_stopwords
-from pymorphy3 import MorphAnalyzer
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.model_selection import train_test_split
-import pymorphy3
-import pandas as pd
-import numpy as np
-from pymystem3 import Mystem
-from tqdm import tqdm
 import time
+from tqdm import tqdm
 
-patterns = "[A-Za-z0-9!#$%&'()*+,./:;<=>?@[\]^_`{|}~—\"\-]+"
-morph = MorphAnalyzer()
+import numpy as np
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+import nltk
+from nltk.corpus import stopwords as nltk_stopwords
+from pymystem3 import Mystem
+
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import cross_validate
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import *
 
 
-def lemmatize(doc, stopwords):
-    doc = re.sub(patterns, ' ', doc)
-    tokens = []
-    for token in doc.split():
-        if token and token not in stopwords:
-            token = token.strip()
-            token = morph.normal_forms(token)[0]
+# загрузим список стоп-слов
+stopwords = set(nltk_stopwords.words('russian'))
+np.array(stopwords)
 
-            tokens.append(token)
-    if len(tokens) > 2:
-        return tokens
-    return None
 
 # Оставим в тексте только кириллические символы
 def clear_text(text):
@@ -39,8 +38,8 @@ def clean_stop_words(text, stopwords):
     return " ".join(text)
 
 
-def lemmatize(df: (pd.Series, pd.DataFrame),
-              text_column: (None, str),
+def lemmatize(df,
+              text_column,
               n_samples: int,
               break_str='br',
               ) -> pd.Series:
@@ -86,7 +85,6 @@ def lemmatize(df: (pd.Series, pd.DataFrame),
     return pd.Series(result, index=df.index)
 
 
-
 if __name__ == '__main__':
     positive = pd.read_csv('positive.csv',
                            sep=';',
@@ -108,29 +106,22 @@ if __name__ == '__main__':
 
     labeled_tweets.index = range(labeled_tweets.shape[0])
 
-    # загрузим список стоп-слов
-    stopwords = set(nltk_stopwords.words('russian'))
-    np.array(stopwords)
-
     labeled_tweets.columns = ['text', 'label']
 
     # test + clear
     start_clean = time.time()
-    labeled_tweets['text_clear'] = labeled_tweets['text'].apply(lambda x: clean_stop_words(clear_text(str(x)), stopwords))
+    labeled_tweets['text_clear'] = labeled_tweets['text'].apply(
+        lambda x: clean_stop_words(clear_text(str(x)), stopwords))
     print('Обработка текстов заняла: ' + str(round(time.time() - start_clean, 2)) + ' секунд')
 
-
-
     # lemmatize
-    print(labeled_tweets)
+
     labeled_tweets['lemm_clean_text'] = lemmatize(
         df=labeled_tweets,
         text_column='text_clear',
         n_samples=1000,
         break_str='br',
     )
-
-
 
     train, test = train_test_split(labeled_tweets,
                                    test_size=0.2,
@@ -140,19 +131,38 @@ if __name__ == '__main__':
     print(train.shape)
     print(test.shape)
 
+    # Сравним распределение целевого признака
+    for sample in [train, test]:
+        print(sample[sample['label'] == 1].shape[0] / sample.shape[0])
 
-    # selected['text_clear'] = selected['text'] \
-    #     .apply(lambda x:
-    #            clean_stop_words(
-    #                clear_text(str(x)),
-    #                stopwords))
-    #
-    # print('Обработка текстов заняла: ' + str(round(time.time() - start_clean, 2)) + ' секунд')
-    #
-    # selected['lemm_clean_tex'] = lemmatize(
-    #     df=selected,
-    #     text_column='text_clear',
-    #     n_samples=100,
-    #     break_str='br',
-    # )
+    count_idf_positive = TfidfVectorizer(ngram_range=(1, 1))
+    count_idf_negative = TfidfVectorizer(ngram_range=(1, 1))
 
+    tf_idf_positive = count_idf_positive.fit_transform(train.query('label == 1')['text'])
+    tf_idf_negative = count_idf_negative.fit_transform(train.query('label == 0')['text'])
+
+    # Сохраним списки Idf для каждого класса
+    positive_importance = pd.DataFrame(
+        {'word': count_idf_positive.get_feature_names_out(),
+         'idf': count_idf_positive.idf_
+         }).sort_values(by='idf', ascending=False)
+
+    negative_importance = pd.DataFrame(
+        {'word': count_idf_negative.get_feature_names_out(),
+         'idf': count_idf_negative.idf_
+         }).sort_values(by='idf', ascending=False)
+
+    print(positive_importance.query('word not in @negative_importance.word and idf < 10.8'))
+    print(negative_importance.query('word not in @positive_importance.word and idf < 10'))
+
+    fig = plt.figure(figsize=(12, 5))
+    positive_importance.idf.hist(bins=100,
+                                 label='positive',
+                                 alpha=0.5,
+                                 color='b',
+                                 )
+    negative_importance.idf.hist(bins=100,
+                                 label='negative',
+                                 alpha=0.5,
+                                 color='r',
+                                 )
