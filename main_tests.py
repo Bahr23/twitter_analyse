@@ -5,21 +5,14 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
 import nltk
 from nltk.corpus import stopwords as nltk_stopwords
 from pymystem3 import Mystem
 
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import cross_validate
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import *
-
 
 # загрузим список стоп-слов
 stopwords = set(nltk_stopwords.words('russian'))
@@ -43,29 +36,6 @@ def lemmatize(df,
               n_samples: int,
               break_str='br',
               ) -> pd.Series:
-    """
-    Принимает:
-    df -- таблицу или столбец pandas содержащий тексты,
-    text_column -- название столбца указываем если передаем таблицу,
-    n_samples -- количество текстов для объединения,
-    break_str -- символ разделения, нужен для ускорения,
-    количество текстов записанное в n_samples объединяется
-    в одит большой текст с предварительной вставкой символа
-    записанного в break_str между фрагментами
-    затем большой текст лемматизируется, после чего разбивается на
-    фрагменты по символу break_str
-
-
-    Возвращает:
-    Столбец pd.Series с лемматизированными текстами
-    в которых все слова приведены к изначальной форме:
-    * для существительных — именительный падеж, единственное число;
-    * для прилагательных — именительный падеж, единственное число,
-    мужской род;
-    * для глаголов, причастий, деепричастий — глагол в инфинитиве
-    (неопределённой форме) несовершенного вида.
-
-    """
 
     result = []
 
@@ -85,7 +55,7 @@ def lemmatize(df,
     return pd.Series(result, index=df.index)
 
 
-if __name__ == '__main__':
+def create_data_frame():
     positive = pd.read_csv('positive.csv',
                            sep=';',
                            header=None
@@ -123,46 +93,53 @@ if __name__ == '__main__':
         break_str='br',
     )
 
-    train, test = train_test_split(labeled_tweets,
-                                   test_size=0.2,
-                                   random_state=12348,
-                                   )
+    labeled_tweets.to_csv('lemmatize_text.csv', sep=';', encoding='utf-8')
 
-    print(train.shape)
-    print(test.shape)
+    return labeled_tweets
 
-    # Сравним распределение целевого признака
-    for sample in [train, test]:
-        print(sample[sample['label'] == 1].shape[0] / sample.shape[0])
 
-    count_idf_positive = TfidfVectorizer(ngram_range=(1, 1))
-    count_idf_negative = TfidfVectorizer(ngram_range=(1, 1))
+def create_metric(vectorizer, lemmatize_text, train, test):
+    vectorizer.fit(lemmatize_text['text'])
+    tf_idf_train_base_1 = vectorizer.transform(train['text'])
+    tf_idf_test_base_1 = vectorizer.transform(test['text'])
 
-    tf_idf_positive = count_idf_positive.fit_transform(train.query('label == 1')['text'])
-    tf_idf_negative = count_idf_negative.fit_transform(train.query('label == 0')['text'])
+    model_lr_base_1 = LogisticRegression(solver='lbfgs',
+                                         random_state=12345,
+                                         max_iter=10000,
+                                         n_jobs=-1)
 
-    # Сохраним списки Idf для каждого класса
-    positive_importance = pd.DataFrame(
-        {'word': count_idf_positive.get_feature_names_out(),
-         'idf': count_idf_positive.idf_
-         }).sort_values(by='idf', ascending=False)
+    model_lr_base_1.fit(tf_idf_train_base_1, train['label'])  # обучаем
+    predict_lr_base_proba = model_lr_base_1.predict(tf_idf_test_base_1)  # предиктим на основе обучения
 
-    negative_importance = pd.DataFrame(
-        {'word': count_idf_negative.get_feature_names_out(),
-         'idf': count_idf_negative.idf_
-         }).sort_values(by='idf', ascending=False)
+    target_names = ['positive', 'negative']
+    return classification_report(list(test['label']), predict_lr_base_proba, target_names=target_names)
 
-    print(positive_importance.query('word not in @negative_importance.word and idf < 10.8'))
-    print(negative_importance.query('word not in @positive_importance.word and idf < 10'))
 
-    fig = plt.figure(figsize=(12, 5))
-    positive_importance.idf.hist(bins=100,
-                                 label='positive',
-                                 alpha=0.5,
-                                 color='b',
-                                 )
-    negative_importance.idf.hist(bins=100,
-                                 label='negative',
-                                 alpha=0.5,
-                                 color='r',
-                                 )
+def main():
+    ##
+    lemmatize_text = pd.read_csv(
+        'lemmatize_text.csv',
+        sep=';'
+    )
+
+    train, test = train_test_split(
+        lemmatize_text,
+        test_size=0.2,
+        random_state=12348,
+    )
+
+    for i in range(1, 4):
+        if i == 1:
+            gramm = 'Униграмы'
+        elif i == 2:
+            gramm = 'Биграммы'
+        elif i == 3:
+            gramm = 'Триграммы'
+
+        print(f'\n{gramm}, используя TfidfVectorizer и CountVectorizer соответственно:')
+        print(create_metric(TfidfVectorizer(ngram_range=(i, i)), lemmatize_text, train, test))
+        print(create_metric(CountVectorizer(ngram_range=(i, i)), lemmatize_text, train, test))
+
+
+if __name__ == '__main__':
+    main()
